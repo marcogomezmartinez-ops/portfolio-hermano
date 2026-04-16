@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Test precios v2</title>
+<style>
+body{font-family:monospace;background:#0a0e17;color:#e0e0e0;padding:1rem;font-size:14px}
+h2{color:#00ff88}
+.row{padding:0.5rem;border-bottom:1px solid #222;display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
+.name{min-width:200px;color:#aaa}
+.source{min-width:100px;color:#888;font-size:12px}
+.ok{color:#00ff88;font-weight:bold}
+.err{color:#ff4466}
+.pending{color:#888}
+.price{color:#fff;font-weight:bold}
+</style>
+</head>
+<body>
+<h2>🧪 Test precios - v2 (Safari compatible)</h2>
+<div id="results"></div>
+
+<script>
+const div = document.getElementById('results');
+
+function addRow(name, source) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<span class="name">${name}</span><span class="source">${source}</span><span class="status pending">⏳ probando...</span><span class="price"></span>`;
+    div.appendChild(row);
+    return {
+        ok: (price) => { row.querySelector('.status').className='status ok'; row.querySelector('.status').textContent='✅ FUNCIONA'; row.querySelector('.price').textContent=price; },
+        err: (msg) => { row.querySelector('.status').className='status err'; row.querySelector('.status').textContent='❌ '+msg; }
+    };
+}
+
+// Safari-safe timeout usando Promise.race
+function fetchWithTimeout(url, ms=8000) {
+    return Promise.race([
+        fetch(url),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), ms))
+    ]);
+}
+
+async function testStooq(name, stooqSymbol, currency) {
+    const url = `https://stooq.com/q/l/?s=${stooqSymbol}&f=sd2t2ohlcv&h&e=csv`;
+    const row = addRow(name, 'stooq.com');
+    try {
+        const res = await fetchWithTimeout(url);
+        const text = await res.text();
+        const lines = text.trim().split('\n');
+        if (lines.length >= 2) {
+            const cols = lines[1].split(',');
+            let price = parseFloat(cols[6]);
+            if (!isNaN(price) && price > 0) {
+                let priceEur = price;
+                let note = '';
+                if (currency === 'GBP') { priceEur = price * 1.17; note = ` (${price.toFixed(3)} GBP × 1.17)`; }
+                else if (currency === 'USD') { priceEur = price * 0.92; note = ` ($${price.toFixed(2)} × 0.92)`; }
+                row.ok(`€${priceEur.toFixed(4)}${note}`);
+                return;
+            }
+        }
+        row.err('Sin datos en CSV');
+    } catch(e) { row.err(e.message); }
+}
+
+async function testCoinGecko() {
+    const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=eur';
+    const row = addRow('Bitcoin', 'CoinGecko');
+    try {
+        const res = await fetchWithTimeout(url);
+        const data = await res.json();
+        const price = data.bitcoin?.eur;
+        if (price) row.ok(`€${price.toLocaleString()}`);
+        else row.err('Sin precio en respuesta');
+    } catch(e) { row.err(e.message); }
+}
+
+async function testMorningstar(name, isin) {
+    const msUrl = `https://tools.morningstar.es/api/rest.svc/timeseries_price/2nhcdckzon?id=${isin}&idtype=Isin&frequency=daily&outputType=JSON`;
+    
+    const proxies = [
+        ['corsproxy.io', `https://corsproxy.io/?${encodeURIComponent(msUrl)}`],
+        ['allorigins',   `https://api.allorigins.win/raw?url=${encodeURIComponent(msUrl)}`],
+    ];
+    
+    for (const [proxyName, proxyUrl] of proxies) {
+        const row = addRow(name, proxyName);
+        try {
+            const res = await fetchWithTimeout(proxyUrl, 10000);
+            const data = await res.json();
+            const history = data?.[0]?.TimeSeries?.Security?.[0]?.HistoryDetail;
+            if (history?.length > 0) {
+                const price = parseFloat(history[history.length-1].Value);
+                row.ok(`€${price}`);
+                return; // éxito, no probar siguiente proxy
+            }
+            row.err('Respuesta sin datos');
+        } catch(e) { row.err(e.message); }
+    }
+}
+
+async function run() {
+    // ETFs con ticker → stooq
+    await testStooq('iShares Developed World (SWDA)', 'swda.l', 'GBP');
+    await testStooq('iShares Emerging Markets (EIMI)', 'eimi.l', 'GBP');
+    await testStooq('iShares Physical Gold (IGLN)',    'igln.l', 'GBP');
+    await testStooq('Tesla',                           'tsla.us','USD');
+    // Bitcoin
+    await testCoinGecko();
+    // Fondos sin ticker → Morningstar proxy
+    await testMorningstar('Gamma Global FI',     'ES0140794001');
+    await testMorningstar('Avantage Fund B',     'ES0112231016');
+    await testMorningstar('DNCA Alpha Bonds',    'LU1694789451');
+    await testMorningstar('Sigma Internacional', 'ES0175902008');
+}
+run();
+</script>
+</body>
+</html>
